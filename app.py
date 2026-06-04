@@ -31,10 +31,8 @@ def extract_blueprint():
                 tables = page.extract_tables()
                 for table in tables:
                     for row in table:
-                        # تنظيف الخانات وتحويلها لنصوص واضحة
                         row_text = " ".join([str(cell) for cell in row if cell])
                         
-                        # البحث عن رموز النوافذ والأبواب القياسية (مثل W1, D2, W-01) مع المقاسات والكميات
                         match = re.search(r'\b([WDwd][-_\d]|\b[WDwd]\d+)\b.*?([\d\.]+)\s*[xX\*]\s*([\d\.]+).*?\b(\d+)\b', row_text)
                         if match:
                             extracted_data["items"].append({
@@ -46,12 +44,10 @@ def extract_blueprint():
                                 "area": float(match.group(2)) * float(match.group(3)) * int(match.group(4))
                             })
 
-            # تنظيف النص الشامل للمبنى للبحث عن مساحات التشطيبات والمقاولات
             full_text = full_text.replace('\n', ' ')
 
             # ====================================================
             # المحرك المتقدم 2: محرك المقاولات العامة والديكور
-            # يبحث عن أكواد التشطيبات ومساحاتها بالمتر المربع
             # ====================================================
             general_pattern = re.compile(r'([A-Za-z]{2,}\-\d+).*?(?:متر مربع|m2|M2)\s*([\d,\.]+)')
             gen_matches = general_pattern.findall(full_text)
@@ -66,7 +62,7 @@ def extract_blueprint():
                     "width": 0.0,
                     "height": 0.0,
                     "qty": 1,
-                    "area": area  # إرسال المساحة الصافية مباشرة للـ PHP
+                    "area": area
                 })
 
         # ====================================================
@@ -74,16 +70,47 @@ def extract_blueprint():
         # ====================================================
         unique_items = {}
         for item in extracted_data["items"]:
-            # إنشاء مفتاح فريد يعتمد على الرمز والمقاس والمساحة لضمان عدم التكرار
             unique_key = f"{item['symbol']}_{item['width']}_{item['height']}_{item['area']}"
             if unique_key not in unique_items:
                 unique_items[unique_key] = item
             else:
-                # إذا تكرر العنصر في صفحة أخرى، نحدث الكمية الأكبر لحصر إجمالي دقيق
                 if item['qty'] > unique_items[unique_key]['qty']:
                     unique_items[unique_key]['qty'] = item['qty']
 
         extracted_data["items"] = list(unique_items.values())
+
+        # ====================================================
+        # ✅ FIX: حساب total_area و total_perimeter وإرسالهم في الـ response
+        # الـ PHP كان يبحث عنهم لكن الـ Python لم يكن يرسلهم — سبب الأصفار الرئيسي
+        # ====================================================
+        total_area = 0.0
+        total_perimeter = 0.0
+
+        for item in extracted_data["items"]:
+            w = item.get("width", 0.0)
+            h = item.get("height", 0.0)
+            q = item.get("qty", 1)
+            area = item.get("area", 0.0)
+
+            # إذا كانت المساحة محسوبة مسبقاً (تشطيبات) نستخدمها مباشرة
+            if item.get("sector") == "contracting_decor" and area > 0:
+                total_area += area * q
+            else:
+                # أبواب وشبابيك: نحسب من الأبعاد
+                total_area += area if area > 0 else (w * h * q)
+
+            # حساب المحيط: 4 جهات للشبابيك، 3 للأبواب
+            symbol = item.get("symbol", "")
+            if symbol.startswith("D"):
+                # باب: يمين + يسار + أعلى
+                total_perimeter += ((h * 2) + w) * q
+            elif w > 0 and h > 0:
+                # شباك: 4 جهات
+                total_perimeter += ((w + h) * 2) * q
+
+        extracted_data["total_area"] = round(total_area, 4)
+        extracted_data["total_perimeter"] = round(total_perimeter, 4)
+
         return jsonify(extracted_data), 200
 
     except Exception as e:
